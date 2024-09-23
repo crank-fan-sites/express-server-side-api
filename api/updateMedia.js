@@ -15,11 +15,9 @@ const router = express.Router();
 router.get('/', async (req, res) => {
   console.log('TikTok media update process started log');
   res.status(202).json({ msg: "TikTok media update process started." });
-  console.log('process.env.DIRECTUS_URL 1', process.env.DIRECTUS_URL);
   await core().catch(error => {
     console.error("Error in core function:", error);
   });
-  console.log('process.env.DIRECTUS_URL 2', process.env.DIRECTUS_URL);
   console.log('TikTok media update process ended log');
 });
 
@@ -65,7 +63,7 @@ async function checkIfShouldUpdate(user) {
 
   const now = new Date()
   const lastUpdated = new Date(user.last_media_updated)
-  const mediaInterval = user.media_interval * 60 * 1000; // Convert minutes to miliseconds
+  const mediaInterval = user.media_interval * 60 * 60 * 1000; // Convert minutes to miliseconds
 
   const diff = now.getTime() - lastUpdated.getTime() > mediaInterval;
   console.log(`checkIfShouldUpdate: ${diff}. ${now.getTime() - lastUpdated.getTime()} | now - lastUpdated: ${now.toISOString()} - ${lastUpdated.toISOString()} | mediaInterval: ${user.media_interval} min`);

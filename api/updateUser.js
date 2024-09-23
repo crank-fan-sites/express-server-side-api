@@ -67,7 +67,7 @@ async function checkIfShouldUpdate(user) {
   const interval = user.interval * 60 * 60 * 1000; // Convert hours to milliseconds
   
   const diff = now.getTime() - lastUpdated.getTime() > interval;
-  console.log(`checkIfShouldUpdate: ${diff} ${now.getTime() - lastUpdated.getTime()} | now: ${now.toISOString()} | lastUpdated: ${lastUpdated.toISOString()} | interval: ${user.interval * 24} hours` );
+  console.log(`checkIfShouldUpdate: ${diff} ${now.getTime() - lastUpdated.getTime()} | now: ${now.toISOString()} | lastUpdated: ${lastUpdated.toISOString()} | interval: ${user.interval} hours` );
   return diff;
 }
 
