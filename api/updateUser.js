@@ -1,5 +1,5 @@
 const express = require('express');
-const { createDirectus, rest, authentication, readItems, updateItem } = require("@directus/sdk");
+const { createDirectus, rest, authentication, readItems, updateItem, createItem } = require("@directus/sdk");
 const axios = require("axios");
 const dotenv = require("dotenv");
 
@@ -74,10 +74,15 @@ async function checkIfShouldUpdate(user) {
 async function updateUser(user) {
   console.log('updateUser: fetching TikTok user data for', user.id, user.unique_id);
   const data = await fetchTikTokUser(user.unique_id);
-  await saveTikTokUser(data, user.id, user.unique_id);
+  
+  const firstData = data.users[user.unique_id];
+  const stats = data.stats[user.unique_id];
+
+  await saveTikTokUser(firstData, stats, user.id);
+  await saveTikTokUserStatsHistory(stats, firstData.id, user.id);
 
   await updateLastUpdated(user.id);
-  console.log('updateUser: saved TikTok user data + updated last_updated for user', user.id, user.unique_id);
+  console.log('updateUser: saved TikTok user data + stats history + updated last_updated for user', user.id, user.unique_id);
 }
 
 async function fetchTikTokUser(
@@ -95,13 +100,10 @@ async function fetchTikTokUser(
 }
 
 async function saveTikTokUser(
-  data,
-  userId,
-  username
+  firstData,
+  stats,
+  userId
 ) {
-  const firstData = data.users[username]
-  const stats = data.stats[username]
-
   const finalData = {
     tiktok_id: firstData.id,
     nickname: firstData.nickname,
@@ -122,6 +124,25 @@ async function saveTikTokUser(
   await directus.request(
     updateItem('tiktok_users', userId, finalData)
   );
+}
+
+async function saveTikTokUserStatsHistory(stats, tiktokId, userId) {
+  const statsHistoryData = {
+    tiktok_id: tiktokId,
+    timestamp: new Date().toISOString(),
+    followers: stats.followerCount,
+    following: stats.followingCount,
+    hearts: stats.heartCount,
+    videos: stats.videoCount,
+    friends: stats.friendCount,
+    user: userId // This links to the tiktok_users collection
+  };
+
+  await directus.request(
+    createItem('tiktok_user_stats_history', statsHistoryData)
+  );
+
+  console.log(`Saved stats history for user ${userId}`);
 }
 
 async function updateLastUpdated(userId) {
