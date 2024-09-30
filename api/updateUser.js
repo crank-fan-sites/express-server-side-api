@@ -80,7 +80,7 @@ async function updateUser(user) {
 
   await saveTikTokUser(firstData, stats, user.id);
   await saveTikTokUserStatsHistory(stats, firstData.id, user.id);
-
+  
   await updateLastUpdated(user.id);
   console.log('updateUser: saved TikTok user data + stats history + updated last_updated for user', user.id, user.unique_id);
 }

@@ -2,6 +2,8 @@ const express = require('express');
 const { createDirectus, rest, authentication, readItems, updateItem, createItem } = require("@directus/sdk");
 const axios = require("axios");
 const dotenv = require("dotenv");
+const AWS = require('aws-sdk');
+const { v4: uuidv4 } = require('uuid');
 
 dotenv.config();
 
@@ -100,6 +102,36 @@ async function fetchTikTokVideos(username, pageId = null) {
   return response.data;
 }
 
+// Configure AWS SDK for Wasabi
+const s3 = new AWS.S3({
+  endpoint: process.env.WASABI_ENDPOINT,
+  accessKeyId: process.env.WASABI_ACCESS_KEY_ID,
+  secretAccessKey: process.env.WASABI_SECRET_ACCESS_KEY,
+  region: process.env.WASABI_REGION,
+  s3ForcePathStyle: true
+});
+
+async function uploadToWasabi(imageUrl, fileName) {
+  try {
+    const response = await axios.get(imageUrl, { responseType: 'arraybuffer' });
+    const buffer = Buffer.from(response.data, 'binary');
+
+    const params = {
+      Bucket: process.env.WASABI_BUCKET_NAME,
+      Key: fileName,
+      Body: buffer,
+      ContentType: response.headers['content-type'],
+      ACL: 'public-read'
+    };
+
+    const result = await s3.upload(params).promise();
+    return result.Location;
+  } catch (error) {
+    console.error('Error uploading to Wasabi:', error);
+    return null;
+  }
+}
+
 async function saveTikTokVideos(videoData, authorId) {
   const itemList = videoData.itemList || videoData.items || [];
 
@@ -117,7 +149,11 @@ async function saveTikTokVideos(videoData, authorId) {
         limit: 1,
       })
     );
-        
+    
+    // Upload cover image to Wasabi
+    const coverFileName = `tiktok_video_covers/${uuidv4()}.jpg`;
+    const wasabiCoverUrl = await uploadToWasabi(item.video?.cover, coverFileName);
+    
     const video = {
       tiktok_id: item.id,
       author: authorId,
@@ -127,7 +163,7 @@ async function saveTikTokVideos(videoData, authorId) {
       comments: parseInt(item.statsV2?.commentCount || '0'),
       plays: parseInt(item.statsV2?.playCount || '0'),
       shares: parseInt(item.statsV2?.shareCount || '0'),
-      cover: item.video?.cover,
+      cover: wasabiCoverUrl || item.video?.cover, // Use Wasabi URL if available, fallback to original
       duration: item.video?.duration,
       dynamic_cover: item.video?.dynamicCover,
     };
