@@ -132,6 +132,9 @@ async function uploadToWasabi(imageUrl, fileName) {
   }
 }
 
+const CUSTOM_DOMAIN = process.env.WASABI_CUSTOM_DOMAIN;
+const WASABI_BUCKET_NAME = process.env.WASABI_BUCKET_NAME;
+
 async function saveTikTokVideos(videoData, authorId) {
   const itemList = videoData.itemList || videoData.items || [];
 
@@ -150,9 +153,27 @@ async function saveTikTokVideos(videoData, authorId) {
       })
     );
     
-    // Upload cover image to Wasabi
-    const coverFileName = `tiktok_video_covers/${uuidv4()}.jpg`;
-    const wasabiCoverUrl = await uploadToWasabi(item.video?.cover, coverFileName);
+    let coverUrl;
+    
+    if (existingVideo && existingVideo.length > 0) {
+      // Check if the existing cover is already a Wasabi URL
+      const isWasabiUrl = existingVideo[0].cover && (
+        existingVideo[0].cover.includes(WASABI_BUCKET_NAME) ||
+        (CUSTOM_DOMAIN && existingVideo[0].cover.includes(CUSTOM_DOMAIN))
+      );
+      
+      if (isWasabiUrl) {
+        coverUrl = existingVideo[0].cover;
+      } else {
+        // Upload cover image to Wasabi only if it's not already a Wasabi URL
+        const coverFileName = `tiktok_video_covers/${uuidv4()}.jpg`;
+        coverUrl = await uploadToWasabi(item.video?.cover, coverFileName) || item.video?.cover;
+      }
+    } else {
+      // For new entries, always upload to Wasabi
+      const coverFileName = `tiktok_video_covers/${uuidv4()}.jpg`;
+      coverUrl = await uploadToWasabi(item.video?.cover, coverFileName) || item.video?.cover;
+    }
     
     const video = {
       tiktok_id: item.id,
@@ -163,7 +184,7 @@ async function saveTikTokVideos(videoData, authorId) {
       comments: parseInt(item.statsV2?.commentCount || '0'),
       plays: parseInt(item.statsV2?.playCount || '0'),
       shares: parseInt(item.statsV2?.shareCount || '0'),
-      cover: wasabiCoverUrl || item.video?.cover, // Use Wasabi URL if available, fallback to original
+      cover: coverUrl,
       duration: item.video?.duration,
       dynamic_cover: item.video?.dynamicCover,
     };

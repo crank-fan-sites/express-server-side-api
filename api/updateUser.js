@@ -2,6 +2,8 @@ const express = require('express');
 const { createDirectus, rest, authentication, readItems, updateItem, createItem } = require("@directus/sdk");
 const axios = require("axios");
 const dotenv = require("dotenv");
+const AWS = require('aws-sdk');
+const { v4: uuidv4 } = require('uuid');
 
 dotenv.config();
 
@@ -11,6 +13,18 @@ const directus = createDirectus(process.env.DIRECTUS_URL)
   .with(authentication());
 
 const router = express.Router();
+
+// Configure AWS SDK for Wasabi
+const s3 = new AWS.S3({
+  endpoint: process.env.WASABI_ENDPOINT,
+  accessKeyId: process.env.WASABI_ACCESS_KEY_ID,
+  secretAccessKey: process.env.WASABI_SECRET_ACCESS_KEY,
+  region: process.env.WASABI_REGION,
+  s3ForcePathStyle: true
+});
+
+const CUSTOM_DOMAIN = process.env.WASABI_CUSTOM_DOMAIN;
+const WASABI_BUCKET_NAME = process.env.WASABI_BUCKET_NAME;
 
 router.get('/', async (req, res) => {
   console.info('TikTok media update process started info');
@@ -99,16 +113,39 @@ async function fetchTikTokUser(
   return response.data;
 }
 
-async function saveTikTokUser(
-  firstData,
-  stats,
-  userId
-) {
+async function saveTikTokUser(firstData, stats, userId) {
+  let avatarUrl;
+
+  // Check if the user already exists and has a Wasabi avatar URL
+  const existingUser = await directus.request(
+    readItems('tiktok_users', {
+      filter: { id: userId },
+      limit: 1,
+    })
+  );
+
+  if (existingUser && existingUser.length > 0 && existingUser[0].avatar) {
+    const isWasabiUrl = existingUser[0].avatar.includes(WASABI_BUCKET_NAME) ||
+      (CUSTOM_DOMAIN && existingUser[0].avatar.includes(CUSTOM_DOMAIN));
+
+    if (isWasabiUrl) {
+      avatarUrl = existingUser[0].avatar;
+    } else {
+      // Upload avatar to Wasabi if it's not already a Wasabi URL
+      const avatarFileName = `tiktok_user_avatars/${uuidv4()}.jpg`;
+      avatarUrl = await uploadToWasabi(firstData.avatarMedium, avatarFileName) || firstData.avatarMedium;
+    }
+  } else {
+    // For new entries or users without an avatar, always upload to Wasabi
+    const avatarFileName = `tiktok_user_avatars/${uuidv4()}.jpg`;
+    avatarUrl = await uploadToWasabi(firstData.avatarMedium, avatarFileName) || firstData.avatarMedium;
+  }
+
   const finalData = {
     tiktok_id: firstData.id,
     nickname: firstData.nickname,
     signature: firstData.signature,
-    avatar: firstData.avatarMedium,
+    avatar: avatarUrl,
     created: new Date(firstData.createTime * 1000).toISOString(),
     verified: firstData.verified,
     sec_uid: firstData.secUid,
@@ -153,6 +190,27 @@ async function updateLastUpdated(userId) {
       last_updated: new Date().toISOString()
     })
   );
+}
+
+async function uploadToWasabi(imageUrl, fileName) {
+  try {
+    const response = await axios.get(imageUrl, { responseType: 'arraybuffer' });
+    const buffer = Buffer.from(response.data, 'binary');
+
+    const params = {
+      Bucket: process.env.WASABI_BUCKET_NAME,
+      Key: fileName,
+      Body: buffer,
+      ContentType: response.headers['content-type'],
+      ACL: 'public-read'
+    };
+
+    const result = await s3.upload(params).promise();
+    return result.Location;
+  } catch (error) {
+    console.error('Error uploading to Wasabi:', error);
+    return null;
+  }
 }
 
 module.exports = router;
