@@ -14,17 +14,18 @@ const directus = createDirectus(process.env.DIRECTUS_URL)
 
 const router = express.Router();
 
-// Configure AWS SDK for Wasabi
+// Configure AWS SDK for Backblaze B2
 const s3 = new AWS.S3({
-  endpoint: process.env.WASABI_ENDPOINT,
-  accessKeyId: process.env.WASABI_ACCESS_KEY_ID,
-  secretAccessKey: process.env.WASABI_SECRET_ACCESS_KEY,
-  region: process.env.WASABI_REGION,
-  s3ForcePathStyle: true
+  endpoint: process.env.B2_ENDPOINT,
+  accessKeyId: process.env.B2_APPLICATION_KEY_ID,
+  secretAccessKey: process.env.B2_APPLICATION_KEY,
+  s3ForcePathStyle: true,
+  signatureVersion: 'v4'
 });
 
-const CUSTOM_DOMAIN = process.env.WASABI_CUSTOM_DOMAIN;
-const WASABI_BUCKET_NAME = process.env.WASABI_BUCKET_NAME;
+const CUSTOM_DOMAIN = process.env.B2_CUSTOM_DOMAIN;
+const B2_BUCKET_NAME = process.env.B2_BUCKET_NAME;
+const B2_DOMAIN = process.env.B2_DOMAIN;
 
 router.get('/', async (req, res) => {
   console.info('TikTok media update process started info');
@@ -47,7 +48,6 @@ async function core() {
     throw new Error('Directus admin credentials are not set in environment variables');
   }
   const token = await directus.login(email, password);
-  console.log('core: token', token);
 
   try {
     const tiktokUsers = await directus.request(
@@ -116,7 +116,7 @@ async function fetchTikTokUser(
 async function saveTikTokUser(firstData, stats, userId) {
   let avatarUrl;
 
-  // Check if the user already exists and has a Wasabi avatar URL
+  // Check if the user already exists and has a B2 avatar URL
   const existingUser = await directus.request(
     readItems('tiktok_users', {
       filter: { id: userId },
@@ -125,20 +125,22 @@ async function saveTikTokUser(firstData, stats, userId) {
   );
 
   if (existingUser && existingUser.length > 0 && existingUser[0].avatar) {
-    const isWasabiUrl = existingUser[0].avatar.includes(WASABI_BUCKET_NAME) ||
-      (CUSTOM_DOMAIN && existingUser[0].avatar.includes(CUSTOM_DOMAIN));
+    const isB2Url = existingUser[0].avatar && (
+      existingUser[0].avatar.includes(CUSTOM_DOMAIN) ||
+      (B2_DOMAIN && existingUser[0].avatar.includes(B2_DOMAIN))
+    );
 
-    if (isWasabiUrl) {
+    if (isB2Url) {
       avatarUrl = existingUser[0].avatar;
     } else {
-      // Upload avatar to Wasabi if it's not already a Wasabi URL
+      // Upload avatar to B2 if it's not already a B2 URL
       const avatarFileName = `tiktok_user_avatars/${uuidv4()}.jpg`;
-      avatarUrl = await uploadToWasabi(firstData.avatarMedium, avatarFileName) || firstData.avatarMedium;
+      avatarUrl = await uploadToB2(firstData.avatarMedium, avatarFileName) || firstData.avatarMedium;
     }
   } else {
-    // For new entries or users without an avatar, always upload to Wasabi
+    // For new entries or users without an avatar, always upload to B2
     const avatarFileName = `tiktok_user_avatars/${uuidv4()}.jpg`;
-    avatarUrl = await uploadToWasabi(firstData.avatarMedium, avatarFileName) || firstData.avatarMedium;
+    avatarUrl = await uploadToB2(firstData.avatarMedium, avatarFileName) || firstData.avatarMedium;
   }
 
   const finalData = {
@@ -157,6 +159,7 @@ async function saveTikTokUser(firstData, stats, userId) {
     videos: stats.videoCount,
     friends: stats.friendCount
   }
+  console.log('updateUser: created', new Date(firstData.createTime * 1000).toISOString());
 
   await directus.request(
     updateItem('tiktok_users', userId, finalData)
@@ -192,23 +195,23 @@ async function updateLastUpdated(userId) {
   );
 }
 
-async function uploadToWasabi(imageUrl, fileName) {
+async function uploadToB2(imageUrl, fileName) {
   try {
     const response = await axios.get(imageUrl, { responseType: 'arraybuffer' });
     const buffer = Buffer.from(response.data, 'binary');
 
     const params = {
-      Bucket: process.env.WASABI_BUCKET_NAME,
+      Bucket: B2_BUCKET_NAME,
       Key: fileName,
       Body: buffer,
       ContentType: response.headers['content-type'],
-      ACL: 'public-read'
     };
 
-    const result = await s3.upload(params).promise();
-    return result.Location;
+    await s3.upload(params).promise();
+    // Construct the URL using the custom domain
+    return `https://${CUSTOM_DOMAIN}/file/${B2_BUCKET_NAME}/${fileName}`;
   } catch (error) {
-    console.error('Error uploading to Wasabi:', error);
+    console.error('Error uploading to B2:', error);
     return null;
   }
 }

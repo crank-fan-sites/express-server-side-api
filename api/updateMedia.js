@@ -35,7 +35,6 @@ async function core() {
     throw new Error('Directus admin credentials are not set in environment variables');
   }
   const token = await directus.login(email, password);
-  console.log('core: token', token);
 
   try {
     const tiktokUsers = await directus.request(
@@ -65,10 +64,10 @@ async function checkIfShouldUpdate(user) {
 
   const now = new Date()
   const lastUpdated = new Date(user.last_media_updated)
-  const mediaInterval = user.media_interval * 60 * 60 * 1000; // Convert minutes to miliseconds
+  const mediaInterval = user.media_interval * 60 * 60 * 1000; // Convert hours to miliseconds
 
   const diff = now.getTime() - lastUpdated.getTime() > mediaInterval;
-  console.log(`checkIfShouldUpdate: ${diff}. ${now.getTime() - lastUpdated.getTime()} | now - lastUpdated: ${now.toISOString()} - ${lastUpdated.toISOString()} | mediaInterval: ${user.media_interval} min`);
+  console.log(`checkIfShouldUpdate: ${diff}. ${now.getTime() - lastUpdated.getTime()} | now - lastUpdated: ${now.toISOString()} - ${lastUpdated.toISOString()} | mediaInterval: ${user.media_interval} hours`);
   return diff;
 }
 
@@ -102,38 +101,44 @@ async function fetchTikTokVideos(username, pageId = null) {
   return response.data;
 }
 
-// Configure AWS SDK for Wasabi
+// Configure AWS SDK for Backblaze B2
 const s3 = new AWS.S3({
-  endpoint: process.env.WASABI_ENDPOINT,
-  accessKeyId: process.env.WASABI_ACCESS_KEY_ID,
-  secretAccessKey: process.env.WASABI_SECRET_ACCESS_KEY,
-  region: process.env.WASABI_REGION,
-  s3ForcePathStyle: true
+  endpoint: process.env.B2_ENDPOINT,
+  accessKeyId: process.env.B2_APPLICATION_KEY_ID,
+  secretAccessKey: process.env.B2_APPLICATION_KEY,
+  s3ForcePathStyle: true,
+  signatureVersion: 'v4'
 });
 
-async function uploadToWasabi(imageUrl, fileName) {
+const CUSTOM_DOMAIN = process.env.B2_CUSTOM_DOMAIN;
+const B2_BUCKET_NAME = process.env.B2_BUCKET_NAME;
+const B2_DOMAIN = process.env.B2_DOMAIN;
+
+async function uploadToB2(imageUrl, fileName) {
+  if (!imageUrl) {
+    console.warn('Empty or invalid image URL provided');
+    return null;
+  }
+
   try {
     const response = await axios.get(imageUrl, { responseType: 'arraybuffer' });
     const buffer = Buffer.from(response.data, 'binary');
 
     const params = {
-      Bucket: process.env.WASABI_BUCKET_NAME,
+      Bucket: B2_BUCKET_NAME,
       Key: fileName,
       Body: buffer,
       ContentType: response.headers['content-type'],
-      ACL: 'public-read'
     };
 
-    const result = await s3.upload(params).promise();
-    return result.Location;
+    await s3.upload(params).promise();
+    // Construct the URL using the custom domain
+    return `https://${CUSTOM_DOMAIN}/file/${B2_BUCKET_NAME}/${fileName}`;
   } catch (error) {
-    console.error('Error uploading to Wasabi:', error);
+    console.error('Error uploading to B2:', error);
     return null;
   }
 }
-
-const CUSTOM_DOMAIN = process.env.WASABI_CUSTOM_DOMAIN;
-const WASABI_BUCKET_NAME = process.env.WASABI_BUCKET_NAME;
 
 async function saveTikTokVideos(videoData, authorId) {
   const itemList = videoData.itemList || videoData.items || [];
@@ -153,26 +158,28 @@ async function saveTikTokVideos(videoData, authorId) {
       })
     );
     
-    let coverUrl;
+    let coverUrl = item.video?.cover || null;
     
-    if (existingVideo && existingVideo.length > 0) {
-      // Check if the existing cover is already a Wasabi URL
-      const isWasabiUrl = existingVideo[0].cover && (
-        existingVideo[0].cover.includes(WASABI_BUCKET_NAME) ||
-        (CUSTOM_DOMAIN && existingVideo[0].cover.includes(CUSTOM_DOMAIN))
-      );
-      
-      if (isWasabiUrl) {
-        coverUrl = existingVideo[0].cover;
+    if (coverUrl) {
+      if (existingVideo && existingVideo.length > 0) {
+        // Check if the existing cover is already a B2 URL (using either custom domain or B2 domain)
+        const isB2Url = existingVideo[0].cover && (
+          existingVideo[0].cover.includes(CUSTOM_DOMAIN) ||
+          (B2_DOMAIN && existingVideo[0].cover.includes(B2_DOMAIN))
+        );
+        
+        if (isB2Url) {
+          coverUrl = existingVideo[0].cover;
+        } else {
+          // Upload cover image to B2 only if it's not already a B2 URL
+          const coverFileName = `tiktok_video_covers/${uuidv4()}.jpg`;
+          coverUrl = await uploadToB2(coverUrl, coverFileName) || coverUrl;
+        }
       } else {
-        // Upload cover image to Wasabi only if it's not already a Wasabi URL
+        // For new entries, always upload to B2
         const coverFileName = `tiktok_video_covers/${uuidv4()}.jpg`;
-        coverUrl = await uploadToWasabi(item.video?.cover, coverFileName) || item.video?.cover;
+        coverUrl = await uploadToB2(coverUrl, coverFileName) || coverUrl;
       }
-    } else {
-      // For new entries, always upload to Wasabi
-      const coverFileName = `tiktok_video_covers/${uuidv4()}.jpg`;
-      coverUrl = await uploadToWasabi(item.video?.cover, coverFileName) || item.video?.cover;
     }
     
     const video = {
@@ -182,6 +189,7 @@ async function saveTikTokVideos(videoData, authorId) {
       desc: item.desc,
       collected: parseInt(item.statsV2?.collectCount || '0'),
       comments: parseInt(item.statsV2?.commentCount || '0'),
+      hearts: parseInt(item.statsV2?.diggCount || '0'),
       plays: parseInt(item.statsV2?.playCount || '0'),
       shares: parseInt(item.statsV2?.shareCount || '0'),
       cover: coverUrl,
@@ -190,15 +198,15 @@ async function saveTikTokVideos(videoData, authorId) {
     };
 
     if (existingVideo && existingVideo.length > 0) {
-      console.log('saveTikTokVideos: updated video', video.tiktok_id, video.desc.slice(0, 30));
+      console.log('saveTikTokVideos: updated video (id, tiktok_id, desc)', existingVideo[0].id, video.tiktok_id, video.desc.slice(0, 30));
       await directus.request(
         updateItem('tiktok_videos', existingVideo[0].id, video)
       );
     } else {
-      console.log('saveTikTokVideos: created video', video.tiktok_id, video.desc.slice(0, 30));
-      await directus.request(
+      const newVideo = await directus.request(
         createItem('tiktok_videos', video)
       );
+      console.log('saveTikTokVideos: created video (id, tiktok_id, desc)', newVideo.id, video.tiktok_id, video.desc.slice(0, 30));
     }
   }
 
