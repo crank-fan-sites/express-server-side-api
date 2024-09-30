@@ -1,10 +1,7 @@
-   #!/bin/bash
+#!/bin/bash
    
-   # Make request to update TikTok user
-   curl -X GET http://localhost/api/tiktok/user
-   
-   # Make request to update TikTok media
-   curl -X GET http://localhost/api/tiktok/media
-   
-   # Optional: Log the time of execution
-   echo "TikTok update executed at $(date)" >> ~/tiktok_update.log
+curl -X GET http://localhost:3002/api/tiktok/user
+echo "TikTok user update executed at $(date)" >> ~/www/tiktok_update.log
+
+curl -X GET http://localhost:3002/api/tiktok/media
+echo "TikTok media update executed at $(date)" >> ~/www/tiktok_update.log
