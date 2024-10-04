@@ -150,7 +150,10 @@ async function saveTikTokVideos(videoData, authorId) {
      console.log('saveTikTokVideos: itemList length', itemList.length);
   }
 
-  for (const item of itemList) {
+  const currentLastVideoActivity = currentUser[0]?.last_video_activity;
+  let latestVideoTimestamp = null;
+
+  for (const [index, item] of itemList.entries()) {
     const existingVideo = await directus.request(
       readItems('tiktok_videos', {
         filter: { tiktok_id: item.id },
@@ -182,10 +185,18 @@ async function saveTikTokVideos(videoData, authorId) {
       }
     }
     
+    
+    const videoTimestamp = new Date(item.createTime * 1000).toISOString();
+    
+    // Set latestVideoTimestamp only for the first video
+    if (index === 0) {
+      newLastVideoActivity = videoTimestamp;
+    }
+
     const video = {
       tiktok_id: item.id,
       author: authorId,
-      created: new Date(item.createTime * 1000).toISOString(),
+      created: videoTimestamp,
       desc: item.desc,
       collected: parseInt(item.statsV2?.collectCount || '0'),
       comments: parseInt(item.statsV2?.commentCount || '0'),
@@ -208,6 +219,16 @@ async function saveTikTokVideos(videoData, authorId) {
       );
       console.log('saveTikTokVideos: created video (id, tiktok_id, desc)', newVideo.id, video.tiktok_id, video.desc.slice(0, 30));
     }
+  }
+
+  // Update last_video_activity only if the new value is more recent
+  if (newLastVideoActivity && (!currentLastVideoActivity || newLastVideoActivity > currentLastVideoActivity)) {
+    await directus.request(
+      updateItem('tiktok_users', authorId, {
+        last_video_activity: newLastVideoActivity
+      })
+    );
+    console.log(`Updated last_video_activity for user ${authorId} to ${newLastVideoActivity}`);
   }
 
   return true;
