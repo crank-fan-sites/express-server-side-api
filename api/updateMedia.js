@@ -150,8 +150,16 @@ async function saveTikTokVideos(videoData, authorId) {
      console.log('saveTikTokVideos: itemList length', itemList.length);
   }
 
+  // Fetch the current user data
+  const currentUser = await directus.request(
+    readItems('tiktok_users', {
+      filter: { id: authorId },
+      limit: 1,
+    })
+  );
+
   const currentLastVideoActivity = currentUser[0]?.last_video_activity;
-  let latestVideoTimestamp = null;
+  let newLastVideoActivity = null;
 
   for (const [index, item] of itemList.entries()) {
     const existingVideo = await directus.request(
@@ -188,7 +196,7 @@ async function saveTikTokVideos(videoData, authorId) {
     
     const videoTimestamp = new Date(item.createTime * 1000).toISOString();
     
-    // Set latestVideoTimestamp only for the first video
+    // Set newLastVideoActivity only for the first video
     if (index === 0) {
       newLastVideoActivity = videoTimestamp;
     }
