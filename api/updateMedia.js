@@ -161,7 +161,14 @@ async function saveTikTokVideos(videoData, authorId) {
   const currentLastVideoActivity = currentUser[0]?.last_video_activity;
   let newLastVideoActivity = null;
 
-  for (const [index, item] of itemList.entries()) {
+  for (const item of itemList) {
+    const videoTimestamp = new Date(item.createTime * 1000).toISOString();
+    
+    // Set newLastVideoActivity only for the first non-pinned video
+    if (newLastVideoActivity === null && !item.isPinnedItem) {
+      newLastVideoActivity = videoTimestamp;
+    }
+
     const existingVideo = await directus.request(
       readItems('tiktok_videos', {
         filter: { tiktok_id: item.id },
@@ -191,14 +198,6 @@ async function saveTikTokVideos(videoData, authorId) {
         const coverFileName = `tiktok_video_covers/${uuidv4()}.jpg`;
         coverUrl = await uploadToB2(coverUrl, coverFileName) || coverUrl;
       }
-    }
-    
-    
-    const videoTimestamp = new Date(item.createTime * 1000).toISOString();
-    
-    // Set newLastVideoActivity only for the first video
-    if (index === 0) {
-      newLastVideoActivity = videoTimestamp;
     }
 
     const video = {
