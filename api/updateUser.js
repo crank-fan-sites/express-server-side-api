@@ -50,21 +50,27 @@ async function core() {
   const token = await directus.login(email, password);
 
   try {
+    // Get the start of today in UTC
+    const todayUTC = new Date(Date.UTC(new Date().getUTCFullYear(), new Date().getUTCMonth(), new Date().getUTCDate()));
+    
     const tiktokUsers = await directus.request(
       readItems('tiktok_users', {
         limit: -1,
+        filter: {
+          _or: [
+            { last_updated: { _null: true } },
+            { last_updated: { _lt: todayUTC.toISOString() } }
+          ]
+        },
       })
     );
     
-    console.log('got the tiktok_users');
+    console.log(`got ${tiktokUsers.length} tiktok_users to update`);
     for (const user of tiktokUsers) {
       userCount++;
-      console.log('updateUser: checking if should update for', user.id, user.unique_id);
-      const shouldUpdate = await checkIfShouldUpdate(user);
-      if (shouldUpdate) {
-        await updateUser(user);
-        updateCount++;
-      }
+      console.log('updateUser: updating for', user.id, user.unique_id);
+      await updateUser(user);
+      updateCount++;
     }
 
     console.log('Total users, updates processed:', userCount, updateCount);
@@ -78,11 +84,15 @@ async function checkIfShouldUpdate(user) {
 
   const now = new Date();
   const lastUpdated = new Date(user.last_updated);
-  const userInterval = user.user_interval * 60 * 60 * 1000; // Convert hours to milliseconds
   
-  const diff = now.getTime() - lastUpdated.getTime() > userInterval;
-  console.log(`checkIfShouldUpdate: ${diff} ${now.getTime() - lastUpdated.getTime()} | now: ${now.toISOString()} | lastUpdated: ${lastUpdated.toISOString()} | interval: ${user.user_interval} hours` );
-  return diff;
+  // Convert to UTC and get the date parts
+  const lastUpdatedUTC = new Date(Date.UTC(lastUpdated.getUTCFullYear(), lastUpdated.getUTCMonth(), lastUpdated.getUTCDate()));
+  const todayUTC = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+  
+  const shouldUpdate = lastUpdatedUTC < todayUTC;
+  
+  console.log(`checkIfShouldUpdate: ${shouldUpdate} | now (UTC): ${now.toUTCString()} | lastUpdated (UTC): ${lastUpdated.toUTCString()} | lastUpdatedUTC: ${lastUpdatedUTC.toUTCString()} | todayUTC: ${todayUTC.toUTCString()}`);
+  return shouldUpdate;
 }
 
 async function updateUser(user) {
