@@ -109,17 +109,28 @@ async function checkIfShouldUpdate(user) {
 }
 
 async function updateUser(user) {
-  console.log('updateUser: fetching TikTok user data for', user.id, user.unique_id);
-  const data = await fetchTikTokUser(user.unique_id);
-  
-  const firstData = data.users[user.unique_id];
-  const stats = data.stats[user.unique_id];
+  try {
+    console.log(`[START] Updating user: ${user.unique_id} (${user.id})`);
+    console.log(`Last updated: ${user.last_updated || 'never'}`);
+    
+    const data = await fetchTikTokUser(user.unique_id);
+    console.log(`[DATA] Fetched data for ${user.unique_id}:`, {
+      hasUser: !!data.users[user.unique_id],
+      hasStats: !!data.stats[user.unique_id]
+    });
+    
+    const firstData = data.users[user.unique_id];
+    const stats = data.stats[user.unique_id];
 
-  await saveTikTokUser(firstData, stats, user.id);
-  await saveTikTokUserStatsHistory(stats, firstData.id, user.id);
-  
-  await updateLastUpdated(user.id);
-  console.log('updateUser: saved TikTok user data + stats history + updated last_updated for user', user.id, user.unique_id);
+    await saveTikTokUser(firstData, stats, user.id);
+    await saveTikTokUserStatsHistory(stats, firstData.id, user.id);
+    
+    await updateLastUpdated(user.id);
+    console.log(`[COMPLETE] Updated user: ${user.unique_id} | followers: ${stats.followerCount} | videos: ${stats.videoCount}`);
+  } catch (error) {
+    console.error(`[FAILED] Failed to update user: ${user.unique_id}`, error);
+    throw error;
+  }
 }
 
 async function fetchTikTokUser(
