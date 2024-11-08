@@ -4,6 +4,7 @@ const axios = require("axios");
 const dotenv = require("dotenv");
 const AWS = require('aws-sdk');
 const { v4: uuidv4 } = require('uuid');
+const util = require('util');
 
 dotenv.config();
 
@@ -22,6 +23,18 @@ router.get('/', async (req, res) => {
   });
   console.log('TikTok media update process ended log');
 });
+
+function logApiError(error, context) {
+  if (axios.isAxiosError(error)) {
+    console.error(`API Error (${context}):`, {
+      url: error.config?.url,
+      status: error.response?.status,
+      data: util.inspect(error.response?.data, { depth: 2, colors: true })
+    });
+  } else {
+    console.error(`Non-Axios Error (${context}):`, error.message);
+  }
+}
 
 async function core() {
   console.log('core: start');
@@ -55,7 +68,7 @@ async function core() {
 
     console.log('Total users, updates processed:', userCount, updateCount);
   } catch (error) {
-    console.error("An error occurred while updating TikTok videos:", error);
+    logApiError(error, 'core');
   }
 }
 
@@ -67,38 +80,50 @@ async function checkIfShouldUpdate(user) {
   const mediaInterval = user.media_interval * 60 * 60 * 1000; // Convert hours to miliseconds
 
   const diff = now.getTime() - lastUpdated.getTime() > mediaInterval;
-  console.log(`checkIfShouldUpdate: ${diff}. ${now.getTime() - lastUpdated.getTime()} | now - lastUpdated: ${now.toISOString()} - ${lastUpdated.toISOString()} | mediaInterval: ${user.media_interval} hours`);
+  // console.log(`checkIfShouldUpdate: ${diff}. ${now.getTime() - lastUpdated.getTime()} | now - lastUpdated: ${now.toISOString()} - ${lastUpdated.toISOString()} | mediaInterval: ${user.media_interval} hours`);
   return diff;
 }
 
 async function updateUserVideos(user) {
-  const isFirstUpdate = user.last_media_updated === null;
-  let nextPageId = null;
+  try {
+    console.log(`[START] Updating videos for user: ${user.unique_id}`);
+    const isFirstUpdate = user.last_media_updated === null;
+    let nextPageId = null;
+    let totalVideosProcessed = 0;
 
-  do {
-    const tiktokVideoData = await fetchTikTokVideos(user.unique_id, nextPageId);
-    await saveTikTokVideos(tiktokVideoData.response, user.id);
-    // @TODO better logic for whether to paginate or not. Task: https://t0ggles.com/chase-saddy/dcjfvjkmcxzup42psnlu
-    nextPageId = isFirstUpdate ? tiktokVideoData.next_page_id : null;
-  } while (nextPageId);
+    do {
+      const tiktokVideoData = await fetchTikTokVideos(user.unique_id, nextPageId);
+      const videosCount = await saveTikTokVideos(tiktokVideoData.response, user.id);
+      totalVideosProcessed += videosCount;
+      nextPageId = isFirstUpdate ? tiktokVideoData.next_page_id : null;
+    } while (nextPageId);
 
-  console.log('updateMedia: saved TikTok user data + updated last_updated for user', user.id, user.unique_id);
-  await updateLastUpdated(user.id);
+    await updateLastUpdated(user.id);
+    console.log(`[COMPLETE] Updated videos for user: ${user.unique_id} | Total videos: ${totalVideosProcessed}`);
+  } catch (error) {
+    console.log(`[FAILED] Failed to update videos for user: ${user.unique_id}`);
+    throw error;
+  }
 }
 
 async function fetchTikTokVideos(username, pageId = null) {
-  const url = new URL(process.env.TIKTOK_PAPI_URL + "/user/videos/by/username");
-  url.searchParams.append("username", username);
-  if (pageId) {
-    url.searchParams.append("page_id", pageId);
-  }
+  try {
+    const url = new URL(process.env.TIKTOK_PAPI_URL + "/user/videos/by/username");
+    url.searchParams.append("username", username);
+    if (pageId) {
+      url.searchParams.append("page_id", pageId);
+    }
 
-  const response = await axios.get(url.toString(), {
-    headers: {
-      "x-access-key": process.env.TIKTOK_PAPI_KEY,
-    },
-  });
-  return response.data;
+    const response = await axios.get(url.toString(), {
+      headers: {
+        "x-access-key": process.env.TIKTOK_PAPI_KEY,
+      },
+    });
+    return response.data;
+  } catch (error) {
+    logApiError(error, `fetchTikTokVideos:${username}`);
+    throw error;
+  }
 }
 
 // Configure AWS SDK for Backblaze B2
@@ -135,110 +160,118 @@ async function uploadToB2(imageUrl, fileName) {
     // Construct the URL using the custom domain
     return `https://${CUSTOM_DOMAIN}/file/${B2_BUCKET_NAME}/${fileName}`;
   } catch (error) {
-    console.error('Error uploading to B2:', error);
+    logApiError(error, `uploadToB2:${fileName}`);
     return null;
   }
 }
 
 async function saveTikTokVideos(videoData, authorId) {
-  const itemList = videoData.itemList || videoData.items || [];
+  try {
+    const itemList = videoData.itemList || videoData.items || [];
 
-  if (!Array.isArray(itemList)) {
-    console.error('itemList is not an array:', itemList);
-    return false;
-  } else {
-     console.log('saveTikTokVideos: itemList length', itemList.length);
-  }
-
-  // Fetch the current user data
-  const currentUser = await directus.request(
-    readItems('tiktok_users', {
-      filter: { id: authorId },
-      limit: 1,
-    })
-  );
-
-  const currentLastVideoActivity = currentUser[0]?.last_video_activity;
-  let newLastVideoActivity = null;
-
-  for (const item of itemList) {
-    const videoTimestamp = new Date(item.createTime * 1000).toISOString();
-    
-    // Set newLastVideoActivity only for the first non-pinned video
-    if (newLastVideoActivity === null && !item.isPinnedItem) {
-      newLastVideoActivity = videoTimestamp;
+    if (!Array.isArray(itemList)) {
+      logApiError(
+        new Error(`itemList is not an array: ${JSON.stringify(itemList)}`),
+        `saveTikTokVideos:${authorId}`
+      );
+      return 0;
+    } else {
+       console.log('saveTikTokVideos: itemList length', itemList.length);
     }
 
-    const existingVideo = await directus.request(
-      readItems('tiktok_videos', {
-        filter: { tiktok_id: item.id },
+    // Fetch the current user data
+    const currentUser = await directus.request(
+      readItems('tiktok_users', {
+        filter: { id: authorId },
         limit: 1,
       })
     );
-    
-    let coverUrl = item.video?.cover || null;
-    
-    if (coverUrl) {
-      if (existingVideo && existingVideo.length > 0) {
-        // Check if the existing cover is already a B2 URL (using either custom domain or B2 domain)
-        const isB2Url = existingVideo[0].cover && (
-          existingVideo[0].cover.includes(CUSTOM_DOMAIN) ||
-          (B2_DOMAIN && existingVideo[0].cover.includes(B2_DOMAIN))
-        );
-        
-        if (isB2Url) {
-          coverUrl = existingVideo[0].cover;
+
+    const currentLastVideoActivity = currentUser[0]?.last_video_activity;
+    let newLastVideoActivity = null;
+
+    for (const item of itemList) {
+      const videoTimestamp = new Date(item.createTime * 1000).toISOString();
+      
+      // Set newLastVideoActivity only for the first non-pinned video
+      if (newLastVideoActivity === null && !item.isPinnedItem) {
+        newLastVideoActivity = videoTimestamp;
+      }
+
+      const existingVideo = await directus.request(
+        readItems('tiktok_videos', {
+          filter: { tiktok_id: item.id },
+          limit: 1,
+        })
+      );
+      
+      let coverUrl = item.video?.cover || null;
+      
+      if (coverUrl) {
+        if (existingVideo && existingVideo.length > 0) {
+          // Check if the existing cover is already a B2 URL (using either custom domain or B2 domain)
+          const isB2Url = existingVideo[0].cover && (
+            existingVideo[0].cover.includes(CUSTOM_DOMAIN) ||
+            (B2_DOMAIN && existingVideo[0].cover.includes(B2_DOMAIN))
+          );
+          
+          if (isB2Url) {
+            coverUrl = existingVideo[0].cover;
+          } else {
+            // Upload cover image to B2 only if it's not already a B2 URL
+            const coverFileName = `tiktok_video_covers/${uuidv4()}.jpg`;
+            coverUrl = await uploadToB2(coverUrl, coverFileName) || coverUrl;
+          }
         } else {
-          // Upload cover image to B2 only if it's not already a B2 URL
+          // For new entries, always upload to B2
           const coverFileName = `tiktok_video_covers/${uuidv4()}.jpg`;
           coverUrl = await uploadToB2(coverUrl, coverFileName) || coverUrl;
         }
+      }
+
+      const video = {
+        tiktok_id: item.id,
+        author: authorId,
+        created: videoTimestamp,
+        desc: item.desc,
+        collected: parseInt(item.statsV2?.collectCount || '0'),
+        comments: parseInt(item.statsV2?.commentCount || '0'),
+        hearts: parseInt(item.statsV2?.diggCount || '0'),
+        plays: parseInt(item.statsV2?.playCount || '0'),
+        shares: parseInt(item.statsV2?.shareCount || '0'),
+        cover: coverUrl,
+        duration: item.video?.duration,
+        dynamic_cover: item.video?.dynamicCover,
+      };
+
+      if (existingVideo && existingVideo.length > 0) {
+        console.log('saveTikTokVideos: updated video (id, tiktok_id, desc)', existingVideo[0].id, video.tiktok_id, video.desc.slice(0, 30));
+        await directus.request(
+          updateItem('tiktok_videos', existingVideo[0].id, video)
+        );
       } else {
-        // For new entries, always upload to B2
-        const coverFileName = `tiktok_video_covers/${uuidv4()}.jpg`;
-        coverUrl = await uploadToB2(coverUrl, coverFileName) || coverUrl;
+        const newVideo = await directus.request(
+          createItem('tiktok_videos', video)
+        );
+        console.log('saveTikTokVideos: created video (id, tiktok_id, desc)', newVideo.id, video.tiktok_id, video.desc.slice(0, 30));
       }
     }
 
-    const video = {
-      tiktok_id: item.id,
-      author: authorId,
-      created: videoTimestamp,
-      desc: item.desc,
-      collected: parseInt(item.statsV2?.collectCount || '0'),
-      comments: parseInt(item.statsV2?.commentCount || '0'),
-      hearts: parseInt(item.statsV2?.diggCount || '0'),
-      plays: parseInt(item.statsV2?.playCount || '0'),
-      shares: parseInt(item.statsV2?.shareCount || '0'),
-      cover: coverUrl,
-      duration: item.video?.duration,
-      dynamic_cover: item.video?.dynamicCover,
-    };
-
-    if (existingVideo && existingVideo.length > 0) {
-      console.log('saveTikTokVideos: updated video (id, tiktok_id, desc)', existingVideo[0].id, video.tiktok_id, video.desc.slice(0, 30));
+    // Update last_video_activity only if the new value is more recent
+    if (newLastVideoActivity && (!currentLastVideoActivity || newLastVideoActivity > currentLastVideoActivity)) {
       await directus.request(
-        updateItem('tiktok_videos', existingVideo[0].id, video)
+        updateItem('tiktok_users', authorId, {
+          last_video_activity: newLastVideoActivity
+        })
       );
-    } else {
-      const newVideo = await directus.request(
-        createItem('tiktok_videos', video)
-      );
-      console.log('saveTikTokVideos: created video (id, tiktok_id, desc)', newVideo.id, video.tiktok_id, video.desc.slice(0, 30));
+      console.log(`Updated last_video_activity for user ${authorId} to ${newLastVideoActivity}`);
     }
-  }
 
-  // Update last_video_activity only if the new value is more recent
-  if (newLastVideoActivity && (!currentLastVideoActivity || newLastVideoActivity > currentLastVideoActivity)) {
-    await directus.request(
-      updateItem('tiktok_users', authorId, {
-        last_video_activity: newLastVideoActivity
-      })
-    );
-    console.log(`Updated last_video_activity for user ${authorId} to ${newLastVideoActivity}`);
+    return itemList.length;
+  } catch (error) {
+    logApiError(error, `saveTikTokVideos:${authorId}`);
+    return 0;
   }
-
-  return true;
 }
 
 async function updateLastUpdated(userId) {

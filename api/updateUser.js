@@ -4,6 +4,7 @@ const axios = require("axios");
 const dotenv = require("dotenv");
 const AWS = require('aws-sdk');
 const { v4: uuidv4 } = require('uuid');
+const util = require('util');
 
 dotenv.config();
 
@@ -35,6 +36,18 @@ router.get('/', async (req, res) => {
   });
   console.log('TikTok user update process ended log');
 });
+
+function logApiError(error, context) {
+  if (axios.isAxiosError(error)) {
+    console.error(`API Error (${context}):`, {
+      url: error.config?.url,
+      status: error.response?.status,
+      data: util.inspect(error.response?.data, { depth: 2, colors: true })
+    });
+  } else {
+    console.error(`Non-Axios Error (${context}):`, error.message);
+  }
+}
 
 async function core() {
   console.log('core: start');
@@ -75,7 +88,7 @@ async function core() {
 
     console.log('Total users, updates processed:', userCount, updateCount);
   } catch (error) {
-    console.error("An error occurred while updating TikTok users:", error);
+    logApiError(error, 'core');
   }
 }
 
@@ -91,7 +104,7 @@ async function checkIfShouldUpdate(user) {
   
   const shouldUpdate = lastUpdatedUTC < todayUTC;
   
-  console.log(`checkIfShouldUpdate: ${shouldUpdate} | now (UTC): ${now.toUTCString()} | lastUpdated (UTC): ${lastUpdated.toUTCString()} | lastUpdatedUTC: ${lastUpdatedUTC.toUTCString()} | todayUTC: ${todayUTC.toUTCString()}`);
+  // console.log(`checkIfShouldUpdate: ${shouldUpdate} | now (UTC): ${now.toUTCString()} | lastUpdated (UTC): ${lastUpdated.toUTCString()} | lastUpdatedUTC: ${lastUpdatedUTC.toUTCString()} | todayUTC: ${todayUTC.toUTCString()}`);
   return shouldUpdate;
 }
 
@@ -112,15 +125,20 @@ async function updateUser(user) {
 async function fetchTikTokUser(
   username
 ) {
-  const url = new URL(process.env.TIKTOK_PAPI_URL + "/user/by/username");
-  url.searchParams.append("username", username);
+  try {
+    const url = new URL(process.env.TIKTOK_PAPI_URL + "/user/by/username");
+    url.searchParams.append("username", username);
 
-  const response = await axios.get(url.toString(), {
-    headers: {
-      "x-access-key": process.env.TIKTOK_PAPI_KEY,
-    },
-  });
-  return response.data;
+    const response = await axios.get(url.toString(), {
+      headers: {
+        "x-access-key": process.env.TIKTOK_PAPI_KEY,
+      },
+    });
+    return response.data;
+  } catch (error) {
+    logApiError(error, `fetchTikTokUser:${username}`);
+    throw error;
+  }
 }
 
 async function saveTikTokUser(firstData, stats, userId) {
@@ -221,7 +239,7 @@ async function uploadToB2(imageUrl, fileName) {
     // Construct the URL using the custom domain
     return `https://${CUSTOM_DOMAIN}/file/${B2_BUCKET_NAME}/${fileName}`;
   } catch (error) {
-    console.error('Error uploading to B2:', error);
+    logApiError(error, `uploadToB2:${fileName}`);
     return null;
   }
 }
