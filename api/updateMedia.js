@@ -39,49 +39,57 @@ function logApiError(error, context) {
 async function core() {
   console.log('core: start');
   
-  let userCount = 0;
-  let updateCount = 0;
-
-  const email = process.env.DIRECTUS_ADMIN_EMAIL;
-  const password = process.env.DIRECTUS_ADMIN_PASSWORD;
-  if (!email || !password) {
-    throw new Error('Directus admin credentials are not set in environment variables');
-  }
-  const token = await directus.login(email, password);
-
+  await directus.login(process.env.DIRECTUS_ADMIN_EMAIL, process.env.DIRECTUS_ADMIN_PASSWORD);
+  
   try {
-    const tiktokUsers = await directus.request(
-      readItems('tiktok_users', {
-        limit: -1,
-      })
-    );
-
+    const tiktokUsers = await directus.request(readItems('tiktok_users', { limit: -1 }));
     console.log('got the tiktok_users');    
-    for (const user of tiktokUsers) {
-      userCount++;
-      const shouldUpdate = await checkIfShouldUpdate(user);
-      if (shouldUpdate) {
-        await updateUserVideos(user);
-        updateCount++;
+    
+    const stats = { total: tiktokUsers.length, updated: 0, skipped: 0, failed: 0 };
+
+    for (let i = 0; i < tiktokUsers.length; i++) {
+      const user = tiktokUsers[i];
+      try {
+        if (await checkIfShouldUpdate(user)) {
+          console.log(`[${i + 1}/${stats.total}] Processing videos for user: ${user.unique_id}`);
+          await updateUserVideos(user);
+          stats.updated++;
+        } else {
+          console.log(`[${i + 1}/${stats.total}] Skipping ${user.unique_id} - Next update in ${getTimeRemaining(user)}`);
+          stats.skipped++;
+        }
+      } catch (error) {
+        stats.failed++;
+        console.error(`[ERROR ${stats.failed}] Failed to update videos for ${user.unique_id}: ${error.message}`);
       }
     }
 
-    console.log('Total users, updates processed:', userCount, updateCount);
+    console.log('Summary:', stats);
   } catch (error) {
     logApiError(error, 'core');
   }
 }
 
+function getTimeRemaining(user) {
+  const now = new Date();
+  const lastUpdated = new Date(user.last_media_updated);
+  const mediaInterval = user.media_interval * 60 * 60 * 1000;
+  const remainingMs = (lastUpdated.getTime() + mediaInterval) - now.getTime();
+  
+  const hours = Math.floor(remainingMs / (60 * 60 * 1000));
+  const minutes = Math.floor((remainingMs % (60 * 60 * 1000)) / (60 * 1000));
+  
+  return `${hours}h ${minutes}m`;
+}
+
 async function checkIfShouldUpdate(user) {
   if (user.last_media_updated === null) return true;
 
-  const now = new Date()
-  const lastUpdated = new Date(user.last_media_updated)
-  const mediaInterval = user.media_interval * 60 * 60 * 1000; // Convert hours to miliseconds
+  const now = new Date();
+  const lastUpdated = new Date(user.last_media_updated);
+  const mediaInterval = user.media_interval * 60 * 60 * 1000; // Convert hours to milliseconds
 
-  const diff = now.getTime() - lastUpdated.getTime() > mediaInterval;
-  // console.log(`checkIfShouldUpdate: ${diff}. ${now.getTime() - lastUpdated.getTime()} | now - lastUpdated: ${now.toISOString()} - ${lastUpdated.toISOString()} | mediaInterval: ${user.media_interval} hours`);
-  return diff;
+  return now.getTime() - lastUpdated.getTime() > mediaInterval;
 }
 
 async function updateUserVideos(user) {

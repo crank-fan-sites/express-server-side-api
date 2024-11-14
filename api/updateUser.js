@@ -54,6 +54,7 @@ async function core() {
 
   let userCount = 0;
   let updateCount = 0;
+  let errorCount = 0;
 
   const email = process.env.DIRECTUS_ADMIN_EMAIL;
   const password = process.env.DIRECTUS_ADMIN_PASSWORD;
@@ -63,7 +64,6 @@ async function core() {
   const token = await directus.login(email, password);
 
   try {
-    // Get the start of today in UTC
     const todayUTC = new Date(Date.UTC(new Date().getUTCFullYear(), new Date().getUTCMonth(), new Date().getUTCDate()));
     
     const tiktokUsers = await directus.request(
@@ -81,12 +81,23 @@ async function core() {
     console.log(`got ${tiktokUsers.length} tiktok_users to update`);
     for (const user of tiktokUsers) {
       userCount++;
-      console.log('updateUser: updating for', user.id, user.unique_id);
-      await updateUser(user);
-      updateCount++;
+      try {
+        console.log(`[${userCount}/${tiktokUsers.length}] Processing user: ${user.unique_id}`);
+        await updateUser(user);
+        updateCount++;
+      } catch (error) {
+        errorCount++;
+        console.error(`[ERROR ${errorCount}] Failed user ${user.unique_id}:`, error.message);
+        // Continue with next user
+        continue;
+      }
     }
 
-    console.log('Total users, updates processed:', userCount, updateCount);
+    console.log('Summary:', {
+      total: userCount,
+      successful: updateCount,
+      failed: errorCount
+    });
   } catch (error) {
     logApiError(error, 'core');
   }
@@ -102,10 +113,7 @@ async function checkIfShouldUpdate(user) {
   const lastUpdatedUTC = new Date(Date.UTC(lastUpdated.getUTCFullYear(), lastUpdated.getUTCMonth(), lastUpdated.getUTCDate()));
   const todayUTC = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
   
-  const shouldUpdate = lastUpdatedUTC < todayUTC;
-  
-  // console.log(`checkIfShouldUpdate: ${shouldUpdate} | now (UTC): ${now.toUTCString()} | lastUpdated (UTC): ${lastUpdated.toUTCString()} | lastUpdatedUTC: ${lastUpdatedUTC.toUTCString()} | todayUTC: ${todayUTC.toUTCString()}`);
-  return shouldUpdate;
+  return lastUpdatedUTC < todayUTC;
 }
 
 async function updateUser(user) {
@@ -113,20 +121,35 @@ async function updateUser(user) {
     console.log(`[START] Updating user: ${user.unique_id} (${user.id})`);
     console.log(`Last updated: ${user.last_updated || 'never'}`);
     
-    const data = await fetchTikTokUser(user.unique_id);
-    console.log(`[DATA] Fetched data for ${user.unique_id}:`, {
-      hasUser: !!data.users[user.unique_id],
-      hasStats: !!data.stats[user.unique_id]
-    });
-    
-    const firstData = data.users[user.unique_id];
-    const stats = data.stats[user.unique_id];
+    try {
+      const data = await fetchTikTokUser(user.unique_id);
+      console.log(`[DATA] Fetched data for ${user.unique_id}:`, {
+        hasUser: !!data.users[user.unique_id],
+        hasStats: !!data.stats[user.unique_id]
+      });
+      
+      const firstData = data.users[user.unique_id];
+      const stats = data.stats[user.unique_id];
 
-    await saveTikTokUser(firstData, stats, user.id);
-    await saveTikTokUserStatsHistory(stats, firstData.id, user.id);
-    
-    await updateLastUpdated(user.id);
-    console.log(`[COMPLETE] Updated user: ${user.unique_id} | followers: ${stats.followerCount} | videos: ${stats.videoCount}`);
+      await saveTikTokUser(firstData, stats, user.id);
+      await saveTikTokUserStatsHistory(stats, firstData.id, user.id);
+      
+      await updateLastUpdated(user.id);
+      console.log(`[COMPLETE] Updated user: ${user.unique_id} | followers: ${stats.followerCount} | videos: ${stats.videoCount}`);
+    } catch (error) {
+      if (axios.isAxiosError(error) && error.response?.status === 404) {
+        console.log(`[DELETED] User no longer exists: ${user.unique_id}`);
+        await directus.request(
+          updateItem('tiktok_users', user.id, {
+            is_active: false,
+            deleted_at: new Date().toISOString(),
+            last_updated: new Date().toISOString()
+          })
+        );
+      } else {
+        throw error;
+      }
+    }
   } catch (error) {
     console.error(`[FAILED] Failed to update user: ${user.unique_id}`, error);
     throw error;
