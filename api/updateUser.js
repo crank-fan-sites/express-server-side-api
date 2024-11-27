@@ -39,11 +39,22 @@ router.get('/', async (req, res) => {
 
 function logApiError(error, context) {
   if (axios.isAxiosError(error)) {
-    console.error(`API Error (${context}):`, {
+    const errorInfo = {
+      context,
       url: error.config?.url,
       status: error.response?.status,
-      data: util.inspect(error.response?.data, { depth: 2, colors: true })
-    });
+      data: error.response?.data,
+      message: error.message
+    };
+    
+    // For 404 errors, log minimal info
+    if (error.response?.status === 404) {
+      console.log(`[${context}] 404 Not Found: ${error.config?.url}`);
+      return;
+    }
+    
+    // For other errors, log more details but still keep it clean
+    console.error(`API Error (${context}):`, JSON.stringify(errorInfo, null, 2));
   } else {
     console.error(`Non-Axios Error (${context}):`, error.message);
   }
@@ -146,12 +157,14 @@ async function updateUser(user) {
             last_updated: new Date().toISOString()
           })
         );
-      } else {
-        throw error;
+        return;
       }
+      throw error;
     }
   } catch (error) {
-    console.error(`[FAILED] Failed to update user: ${user.unique_id}`, error);
+    if (!axios.isAxiosError(error) || error.response?.status !== 404) {
+      console.error(`[FAILED] Failed to update user: ${user.unique_id}`, error.message);
+    }
     throw error;
   }
 }
